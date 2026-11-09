@@ -40,30 +40,43 @@ const updateProgress = async (req, res) => {
       enrollment.lastPosition = Math.round(lastPosition);
     }
 
-    // Accumulate watched seconds safely (prevent arbitrary skipped time jumps or negative values)
+    // Accumulate watched seconds safely
     if (typeof deltaSeconds === 'number' && !isNaN(deltaSeconds) && deltaSeconds > 0) {
-      // Clamped to a max delta of 15 seconds per update tick (~10s intervals)
-      const safeDelta = Math.min(15, Math.max(0, deltaSeconds));
-      enrollment.watchedSeconds = Math.min(effectiveDuration, (enrollment.watchedSeconds || 0) + safeDelta);
+      enrollment.watchedSeconds = Math.min(effectiveDuration, (enrollment.watchedSeconds || 0) + deltaSeconds);
+    }
+    // Ensure watched seconds reflects the furthest playback position reached
+    if (enrollment.lastPosition > (enrollment.watchedSeconds || 0)) {
+      enrollment.watchedSeconds = Math.min(effectiveDuration, enrollment.lastPosition);
     }
 
-    // Calculate progress percentage: (Watched Duration / Total Video Duration) * 100
+    // Calculate progress percentage: based on playback position and watched seconds
     if (enrollment.durationSeconds > 0) {
-      const calculatedProgress = (enrollment.watchedSeconds / enrollment.durationSeconds) * 100;
+      const positionProgress = (enrollment.lastPosition / enrollment.durationSeconds) * 100;
+      const watchedProgress = ((enrollment.watchedSeconds || 0) / enrollment.durationSeconds) * 100;
+      const calculatedProgress = Math.max(positionProgress, watchedProgress);
       enrollment.progress = Math.min(100, Math.max(enrollment.progress || 0, Math.round(calculatedProgress)));
     }
 
-    // Check completion threshold: 90%
-    const isNowCompleted = enrollment.progress >= 90;
-    if (isNowCompleted && enrollment.status !== 'Completed') {
-      enrollment.status = 'Completed';
-      enrollment.completedAt = new Date();
+    // Check completion threshold: 90% or explicit complete trigger
+    const isNowCompleted = enrollment.progress >= 90 || eventType === 'complete';
+    if (isNowCompleted) {
+      if (eventType === 'complete') {
+        enrollment.progress = 100;
+        if (enrollment.durationSeconds > 0) {
+          enrollment.lastPosition = enrollment.durationSeconds;
+          enrollment.watchedSeconds = enrollment.durationSeconds;
+        }
+      }
+      if (enrollment.status !== 'Completed') {
+        enrollment.status = 'Completed';
+        enrollment.completedAt = new Date();
 
-      await Activity.create({
-        studentId: enrollment.studentId,
-        courseId: enrollment.courseId,
-        activityType: 'Course completed'
-      }).catch(err => console.error('Error logging course completed activity:', err));
+        await Activity.create({
+          studentId: enrollment.studentId,
+          courseId: enrollment.courseId,
+          activityType: 'Course completed'
+        }).catch(err => console.error('Error logging course completed activity:', err));
+      }
     }
 
     enrollment.lastAccessedAt = new Date();

@@ -115,13 +115,17 @@ const CoursePlayer = () => {
           if (res.data.enrollment) {
             const enr = res.data.enrollment;
             setEnrollment(enr);
-            setCurrentProgress(enr.progress || 0);
-            setCurrentPlaybackTime(enr.lastPosition || 0);
-            lastPositionRef.current = enr.lastPosition || 0;
-            if (enr.durationSeconds > 0) {
-              setTotalVideoDuration(enr.durationSeconds);
+            const dur = enr.durationSeconds || 0;
+            const pos = enr.lastPosition || 0;
+            const posPercent = (dur > 0 && pos > 0) ? Math.round((pos / dur) * 100) : 0;
+            const initialProgress = Math.min(100, Math.max(enr.progress || 0, posPercent));
+            setCurrentProgress(initialProgress);
+            setCurrentPlaybackTime(pos);
+            lastPositionRef.current = pos;
+            if (dur > 0) {
+              setTotalVideoDuration(dur);
             }
-            if (enr.status === 'Completed' || enr.progress >= 90) {
+            if (enr.status === 'Completed' || initialProgress >= 90) {
               setIsCompleted(true);
             }
           } else {
@@ -217,6 +221,11 @@ const CoursePlayer = () => {
                 event.target.seekTo(savedPosition, true);
                 setCurrentPlaybackTime(savedPosition);
                 lastPositionRef.current = savedPosition;
+
+                if (duration > 0) {
+                  const resumePercent = Math.min(100, Math.round((savedPosition / duration) * 100));
+                  setCurrentProgress(prev => Math.max(prev, resumePercent));
+                }
               }
             },
             onStateChange: (event) => {
@@ -300,7 +309,7 @@ const CoursePlayer = () => {
     };
   }, [pageLoading, courseId, containerId]);
 
-  // Active Playback Clock & Elapsed Continuous Watch Tracking (Every 1s while playing)
+  // Active Playback Clock & Real-time Progress Tracking (Every 1s while playing)
   useEffect(() => {
     let timer = null;
 
@@ -313,19 +322,31 @@ const CoursePlayer = () => {
         const prevPos = lastPositionRef.current;
         const delta = currentPos - prevPos;
 
-        // Normal continuous playback: delta between 0 and 1.5 seconds
+        // Continuous playback delta accumulation
         if (delta > 0 && delta <= 1.5) {
           accumulatedDeltaRef.current += delta;
         }
-        // If delta > 1.5 or < 0, the student seeked; do not add seek jumps to watched seconds!
 
         lastPositionRef.current = currentPos;
         setCurrentPlaybackTime(currentPos);
 
-        // Check if duration can be updated
-        if (player.getDuration && totalVideoDuration === 0) {
-          const d = player.getDuration();
-          if (d > 0) setTotalVideoDuration(d);
+        // Update total duration & live percentage
+        const dur = (player.getDuration && player.getDuration() > 0)
+          ? player.getDuration()
+          : (totalVideoDuration || enrollmentRef.current?.durationSeconds || 0);
+
+        if (dur > 0) {
+          if (totalVideoDuration === 0) setTotalVideoDuration(dur);
+          const livePercent = Math.min(100, Math.round((currentPos / dur) * 100));
+          setCurrentProgress((prev) => Math.max(prev, livePercent));
+          if (livePercent >= 90) {
+            setIsCompleted(true);
+          }
+        }
+
+        // If user jumped / scrubbed across video by > 2s, trigger immediate sync
+        if (Math.abs(delta) > 2) {
+          sendProgressUpdate('seek');
         }
       }, 1000);
     }
@@ -333,7 +354,7 @@ const CoursePlayer = () => {
     return () => {
       if (timer) clearInterval(timer);
     };
-  }, [isPlaying, totalVideoDuration]);
+  }, [isPlaying, totalVideoDuration, sendProgressUpdate]);
 
   // Periodic Progress Sync (~every 10 seconds while playing)
   useEffect(() => {
@@ -494,6 +515,43 @@ const CoursePlayer = () => {
                   </strong>
                 </span>
               </div>
+            </div>
+
+            {/* Quick Actions Row */}
+            <div className="playback-actions-row" style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
+              {!isCompleted ? (
+                <button
+                  type="button"
+                  className="btn-primary btn-sm"
+                  onClick={() => {
+                    sendProgressUpdate('complete');
+                    setIsCompleted(true);
+                    setCurrentProgress(100);
+                  }}
+                  id="btn-mark-completed"
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem', padding: '0.45rem 0.9rem', borderRadius: '6px' }}
+                >
+                  <CheckCircle size={15} />
+                  <span>Mark as Completed</span>
+                </button>
+              ) : (
+                <span className="badge-completed-inline" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', color: '#10b981', fontWeight: 600, fontSize: '0.875rem' }}>
+                  <Award size={16} />
+                  <span>Course Completed (100%)</span>
+                </span>
+              )}
+
+              <button
+                type="button"
+                className="btn-secondary btn-sm"
+                onClick={() => sendProgressUpdate('manual')}
+                disabled={isSyncingRef.current}
+                id="btn-sync-progress"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem', padding: '0.45rem 0.9rem', borderRadius: '6px' }}
+              >
+                <RefreshCw size={13} className={saveStatus === 'saving' ? 'spin' : ''} />
+                <span>Save Progress Now</span>
+              </button>
             </div>
 
             {/* Celebration alert on completion */}
